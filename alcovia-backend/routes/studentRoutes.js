@@ -4,65 +4,87 @@ const db = require("../db");
 const axios = require("axios");
 require("dotenv").config();
 
-// ✅ 1. DAILY CHECKIN
-router.post("/daily-checkin", (req, res) => {
+// DAILY CHECKIN
+router.post("/daily-checkin", async (req, res) => {
   const { student_id, quiz_score, focus_minutes } = req.body;
 
-  // insert log
-  db.query(
-    "INSERT INTO daily_logs (student_id, quiz_score, focus_minutes) VALUES (?, ?, ?)",
-    [student_id, quiz_score, focus_minutes]
-  );
+  try {
+    // Insert daily log
+    await db.query(
+      "INSERT INTO daily_logs (student_id, quiz_score, focus_minutes) VALUES (?, ?, ?)",
+      [student_id, quiz_score, focus_minutes]
+    );
 
-  // ✅ logic evaluation
-  if (quiz_score > 7 && focus_minutes > 60) {
-    db.query("UPDATE students SET status='On Track' WHERE id=?", [student_id]);
-    return res.json({ status: "On Track" });
+    // Check if student is on track
+    if (quiz_score > 7 && focus_minutes > 60) {
+      await db.query("UPDATE students SET status='On Track' WHERE id=?", [
+        student_id,
+      ]);
+      return res.json({ status: "On Track" });
+    }
+
+    // Student failed → needs intervention
+    await db.query(
+      "UPDATE students SET status='Needs Intervention' WHERE id=?",
+      [student_id]
+    );
+
+    // Call n8n webhook
+    axios
+      .post(process.env.N8N_WEBHOOK_URL, {
+        student_id,
+        quiz_score,
+        focus_minutes,
+      })
+      .catch((err) => console.log("N8N Error:", err.message));
+
+    return res.json({ status: "Pending Mentor Review" });
+  } catch (err) {
+    console.log("Daily Checkin Error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
   }
-
-  // ✅ failed → needs intervention
-  db.query("UPDATE students SET status='Needs Intervention' WHERE id=?", [
-    student_id,
-  ]);
-
-  // ✅ trigger n8n webhook
-  axios
-    .post(process.env.N8N_WEBHOOK_URL, {
-      student_id,
-      quiz_score,
-      focus_minutes,
-    })
-    .catch((err) => console.log("N8N Error:", err));
-
-  return res.json({ status: "Pending Mentor Review" });
 });
 
-// ✅ 2. ASSIGN INTERVENTION (called by n8n)
-router.post("/assign-intervention", (req, res) => {
+// ASSIGN INTERVENTION
+router.post("/assign-intervention", async (req, res) => {
   const { student_id, task } = req.body;
 
-  db.query("INSERT INTO interventions (student_id, task) VALUES (?, ?)", [
-    student_id,
-    task,
-  ]);
+  try {
+    await db.query(
+      "INSERT INTO interventions (student_id, task) VALUES (?, ?)",
+      [student_id, task]
+    );
 
-  db.query("UPDATE students SET status='Remedial' WHERE id=?", [student_id]);
+    await db.query("UPDATE students SET status='Remedial' WHERE id=?", [
+      student_id,
+    ]);
 
-  return res.json({ status: "Remedial Assigned", task });
+    return res.json({ status: "Remedial Assigned", task });
+  } catch (err) {
+    console.log("Assign Intervention Error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
 });
 
-// ✅ 3. MARK COMPLETE (student action)
-router.post("/complete-task", (req, res) => {
+// MARK COMPLETE
+router.post("/complete-task", async (req, res) => {
   const { student_id } = req.body;
 
-  db.query(
-    "UPDATE interventions SET status='Completed' WHERE student_id=? ORDER BY id DESC LIMIT 1",
-    [student_id]
-  );
+  try {
+    await db.query(
+      "UPDATE interventions SET status='Completed' WHERE student_id=? ORDER BY id DESC LIMIT 1",
+      [student_id]
+    );
 
-  db.query("UPDATE students SET status='On Track' WHERE id=?", [student_id]);
+    await db.query("UPDATE students SET status='On Track' WHERE id=?", [
+      student_id,
+    ]);
 
-  return res.json({ status: "On Track" });
+    return res.json({ status: "On Track" });
+  } catch (err) {
+    console.log("Complete Task Error:", err);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
 });
 
 module.exports = router;
